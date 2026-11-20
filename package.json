@@ -148,7 +148,8 @@
         "python3-pip"
       ],
       "recommends": [
-        "ffmpeg"
+        "ffmpeg",
+        "xdotool"
       ],
       "fpm": [
         "--after-install=scripts/post-install-deb.sh"
