@@ -1,5 +1,3 @@
-const A = 1;
-  const B = 2;
 /**
  * Single source of truth for the answer modes ("skills") OpenCluely offers.
  *
