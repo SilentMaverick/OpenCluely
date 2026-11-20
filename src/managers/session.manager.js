@@ -8,7 +8,7 @@ class SessionManager {
     this.compressionEnabled = true;
     this.maxSize = config.get('session.maxMemorySize');
     this.compressionThreshold = config.get('session.compressionThreshold');
-    this.currentSkill = 'dsa'; // Default skill is DSA
+    this.currentSkill = require('../core/skills').DEFAULT_SKILL;
     this.isInitialized = false;
     
     this.initializeWithSkillPrompts();
@@ -231,20 +231,9 @@ class SessionManager {
   getSkillContext(skillName = null, programmingLanguage = null) {
     const targetSkill = skillName || this.currentSkill;
     
-    // Get skill prompt with programming language injection if provided
-    let skillPrompt = null;
-    if (programmingLanguage && promptLoader.requiresProgrammingLanguage(targetSkill)) {
-      // Use prompt loader to get language-enhanced prompt
-      skillPrompt = promptLoader.getSkillPrompt(targetSkill, programmingLanguage);
-    } else {
-      // Find skill prompt from session memory (fallback)
-      const skillPromptEvent = this.sessionMemory.find(event => 
-        event.action === 'skill_prompt_initialization' && 
-        event.skill === targetSkill
-      );
-      skillPrompt = skillPromptEvent?.content || null;
-    }
-    
+    // The prompt loader appends the coding language only for modes that write code.
+    const skillPrompt = promptLoader.getSkillPrompt(targetSkill, programmingLanguage);
+
     // Get recent events for this skill
     const skillEvents = this.sessionMemory
       .filter(event => event.skill === targetSkill && !event.metadata?.isInitialization)
