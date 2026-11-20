@@ -111,6 +111,7 @@ def transcribe(request):
         verbose=None,
         temperature=0,
         condition_on_previous_text=False,
+        initial_prompt=request.get('initial_prompt') or None,
     )
     return {
         'text': (result.get('text') or '').strip(),
