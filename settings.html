@@ -301,7 +301,7 @@
                     <div class="settings-item">
                         <div>
                             <div class="settings-item-label">Coding Language</div>
-                            <div class="settings-item-description">Select your preferred programming language</div>
+                            <div class="settings-item-description">Language used when an answer needs code (General, DSA, Programming)</div>
                         </div>
                         <select class="input-field" id="codingLanguage">
                             <option value="cpp">C++</option>
@@ -313,11 +313,15 @@
                     </div>
                     <div class="settings-item">
                         <div>
-                            <div class="settings-item-label">Active Skill</div>
-                            <div class="settings-item-description">Choose your current focus area</div>
+                            <div class="settings-item-label">Answer Mode</div>
+                            <div class="settings-item-description">Every mode answers any question; the mode sets the answer style. General picks the style per question.</div>
                         </div>
                         <select class="input-field" id="activeSkill">
-                            <option value="dsa">Data Structures & Algorithms</option>
+                            <option value="general">General (any question)</option>
+                            <option value="dsa">DSA</option>
+                            <option value="programming">Programming</option>
+                            <option value="system-design">System Design</option>
+                            <option value="behavioral">Behavioral / HR</option>
                         </select>
                     </div>
                 </div>
@@ -441,7 +445,7 @@
                         <div class="settings-item">
                             <div>
                                 <div class="settings-item-label">Whisper Segment Length</div>
-                                <div class="settings-item-description">Chunk size in milliseconds for local transcription</div>
+                                <div class="settings-item-description">Only used when VAD is off: fixed chunk size in ms</div>
                             </div>
                             <input type="number" class="input-field" id="whisperSegmentMs" placeholder="4000" min="2000" step="500">
                         </div>
@@ -456,6 +460,57 @@
                 </div>
             </div>
             
+            <div class="settings-section">
+                <div class="settings-section-title">
+                    <i class="fas fa-keyboard"></i>
+                    Dictation (local, any app)
+                </div>
+                <div class="settings-section-content">
+                    <div class="settings-item">
+                        <div>
+                            <div class="settings-item-label">Enable Dictation</div>
+                            <div class="settings-item-description">Press Alt+D, speak, press Alt+D again. Uses local Whisper; nothing is sent to Gemini.</div>
+                        </div>
+                        <select class="input-field" id="dictationEnabled">
+                            <option value="true">On</option>
+                            <option value="false">Off</option>
+                        </select>
+                    </div>
+                    <div class="settings-item">
+                        <div>
+                            <div class="settings-item-label">Insert Method</div>
+                            <div class="settings-item-description">Paste into the focused app, or only copy to the clipboard</div>
+                        </div>
+                        <select class="input-field" id="dictationOutput">
+                            <option value="paste">Paste automatically</option>
+                            <option value="clipboard">Copy to clipboard</option>
+                        </select>
+                    </div>
+                    <div class="settings-item">
+                        <div>
+                            <div class="settings-item-label">Remove Fillers</div>
+                            <div class="settings-item-description">Drop um / uh / erm</div>
+                        </div>
+                        <select class="input-field" id="dictationRemoveFillers">
+                            <option value="true">Yes</option>
+                            <option value="false">No</option>
+                        </select>
+                    </div>
+                    <div class="settings-item">
+                        <div class="settings-stack">
+                            <div>
+                                <div class="settings-item-label">Personal Dictionary</div>
+                                <div class="settings-item-description">Names and terms to spell your way, comma separated</div>
+                            </div>
+                            <input type="text" class="input-field" id="dictationDictionary" placeholder="OpenCluely, Kubernetes, Priya" style="max-width: 100%;">
+                        </div>
+                    </div>
+                    <div class="settings-note">
+                        Say "new line", "new paragraph", "question mark", or "scratch that". Auto-paste needs Accessibility permission on macOS and xdotool (X11) or wtype (Wayland) on Linux; otherwise the text stays on your clipboard.
+                    </div>
+                </div>
+            </div>
+
             <div class="settings-section">
                 <div class="settings-section-title">
                     <i class="fas fa-robot"></i>
