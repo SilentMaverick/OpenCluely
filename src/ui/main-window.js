@@ -10,7 +10,7 @@ class MainWindowUI {
     constructor() {
         this.isInteractive = false;
         this.isHidden = false;
-        this.currentSkill = 'dsa'; // Default, will be updated from settings
+        this.currentSkill = 'general'; // Default, will be updated from settings
         this.statusDot = null;
         this.skillIndicator = null;
         this.micButton = null;
@@ -24,9 +24,7 @@ class MainWindowUI {
         this._captureInterval = null;
         
         // Define available skills for navigation
-        this.availableSkills = [
-            'dsa'
-        ];
+        this.availableSkills = ['general', 'dsa', 'programming', 'system-design', 'behavioral'];
         
         this.init();
     }
@@ -288,18 +286,21 @@ class MainWindowUI {
             }
         });
 
-        // Skill indicator click handler toggles DSA skill
+        // Clicking the mode label cycles to the next answer mode
         this.skillIndicator.addEventListener('click', () => {
             if (!this.isInteractive) return;
-            const newSkill = 'dsa';
-            if (window.electronAPI && window.electronAPI.updateActiveSkill) {
-                window.electronAPI.updateActiveSkill(newSkill).then(() => {
-                    this.handleSkillActivated(newSkill);
-                });
-            } else {
-                this.handleSkillActivated(newSkill);
-            }
+            this.navigateSkill(1);
         });
+
+        // Dictation button
+        this.dictateButton = document.getElementById('dictateButton');
+        if (this.dictateButton) {
+            this.dictateButton.addEventListener('click', () => {
+                if (this.isInteractive && window.electronAPI && window.electronAPI.toggleDictation) {
+                    window.electronAPI.toggleDictation();
+                }
+            });
+        }
 
         // Check for required elements (settingsIndicator is optional)
         if (this.settingsIndicator) {
@@ -433,6 +434,10 @@ class MainWindowUI {
                 this.handleRecordingStopped();
             });
 
+            if (window.electronAPI.onDictationState) {
+                window.electronAPI.onDictationState((event, data) => this.handleDictationState(data || {}));
+            }
+
             window.electronAPI.onSkillChanged((event, data) => {
                 if (data && data.skill) {
                     this.handleSkillChanged(data);
@@ -519,15 +524,11 @@ class MainWindowUI {
     handleLLMResponse(data) {
         const skill = data.skill || data.metadata?.skill || 'General';
         const skillNames = {
+            'general': 'General',
             'dsa': 'DSA',
-            'behavioral': 'Behavioral', 
-            'sales': 'Sales',
-            'presentation': 'Presentation',
-            'data-science': 'Data Science',
             'programming': 'Programming',
-            'devops': 'DevOps',
             'system-design': 'System Design',
-            'negotiation': 'Negotiation'
+            'behavioral': 'Behavioral'
         };
         
         const displaySkill = skillNames[skill] || skill.toUpperCase();
@@ -606,6 +607,18 @@ class MainWindowUI {
             statusDotClass: this.statusDot ? this.statusDot.className : 'not found',
             skillIndicatorClass: this.skillIndicator ? this.skillIndicator.className : 'not found'
         });
+    }
+
+    handleDictationState(data) {
+        const btn = this.dictateButton || document.getElementById('dictateButton');
+        const label = document.getElementById('dictateLabel');
+        if (!btn) return;
+        btn.classList.remove('listening', 'processing', 'done', 'error');
+        if (data.state && data.state !== 'idle') btn.classList.add(data.state);
+        const text = { listening: 'Listening', processing: 'Working', done: data.chars === 0 ? 'No speech' : 'Done', error: 'Error' }[data.state] || '';
+        if (label) label.textContent = text;
+        btn.title = data.message || 'Dictate into any app (Alt+D)';
+        setTimeout(() => this.resizeWindowToContent(), 50);
     }
 
     handleSkillChanged(data) {
@@ -758,15 +771,11 @@ class MainWindowUI {
 
     updateSkillIndicator() {
         const skillNames = {
+            'general': 'General',
             'dsa': 'DSA',
-            'behavioral': 'Behavioral', 
-            'sales': 'Sales',
-            'presentation': 'Presentation',
-            'data-science': 'Data Science',
             'programming': 'Programming',
-            'devops': 'DevOps',
             'system-design': 'System Design',
-            'negotiation': 'Negotiation'
+            'behavioral': 'Behavioral'
         };
         
         logger.info('Updating skill indicator', {
@@ -871,15 +880,11 @@ class MainWindowUI {
 
     showSkillChangeNotification(skill, direction) {
         const skillNames = {
+            'general': 'General',
             'dsa': 'DSA',
-            'behavioral': 'Behavioral', 
-            'sales': 'Sales',
-            'presentation': 'Presentation',
-            'data-science': 'Data Science',
             'programming': 'Programming',
-            'devops': 'DevOps',
             'system-design': 'System Design',
-            'negotiation': 'Negotiation'
+            'behavioral': 'Behavioral'
         };
         
         const displayName = skillNames[skill] || skill.toUpperCase();
