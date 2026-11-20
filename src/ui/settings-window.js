@@ -17,6 +17,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const whisperResponseTargetSelect = document.getElementById('whisperResponseTarget');
     const whisperSegmentMsInput = document.getElementById('whisperSegmentMs');
     const geminiKeyInput = document.getElementById('geminiKey');
+    const dictationEnabledSelect = document.getElementById('dictationEnabled');
+    const dictationOutputSelect = document.getElementById('dictationOutput');
+    const dictationRemoveFillersSelect = document.getElementById('dictationRemoveFillers');
+    const dictationDictionaryInput = document.getElementById('dictationDictionary');
     const windowGapInput = document.getElementById('windowGap');
     const codingLanguageSelect = document.getElementById('codingLanguage');
     const activeSkillSelect = document.getElementById('activeSkill');
@@ -88,6 +92,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (whisperResponseTargetSelect) whisperResponseTargetSelect.value = settings.whisperResponseTarget || 'both';
         if (whisperSegmentMsInput) whisperSegmentMsInput.value = settings.whisperSegmentMs || '';
         if (geminiKeyInput) geminiKeyInput.value = settings.geminiKey || '';
+        if (dictationEnabledSelect) dictationEnabledSelect.value = String(settings.dictationEnabled !== false);
+        if (dictationOutputSelect) dictationOutputSelect.value = settings.dictationOutput || 'paste';
+        if (dictationRemoveFillersSelect) dictationRemoveFillersSelect.value = String(settings.dictationRemoveFillers !== false);
+        if (dictationDictionaryInput) dictationDictionaryInput.value = settings.dictationDictionary || '';
         if (windowGapInput) windowGapInput.value = settings.windowGap || '';
 
         // Set C++ as default if no coding language is specified
@@ -147,6 +155,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (whisperResponseTargetSelect) settings.whisperResponseTarget = whisperResponseTargetSelect.value;
         if (whisperSegmentMsInput) settings.whisperSegmentMs = whisperSegmentMsInput.value;
         if (geminiKeyInput) settings.geminiKey = geminiKeyInput.value;
+        if (dictationEnabledSelect) settings.dictationEnabled = dictationEnabledSelect.value;
+        if (dictationOutputSelect) settings.dictationOutput = dictationOutputSelect.value;
+        if (dictationRemoveFillersSelect) settings.dictationRemoveFillers = dictationRemoveFillersSelect.value;
+        if (dictationDictionaryInput) settings.dictationDictionary = dictationDictionaryInput.value;
         if (windowGapInput) settings.windowGap = windowGapInput.value;
         if (codingLanguageSelect) settings.codingLanguage = codingLanguageSelect.value;
         if (activeSkillSelect) settings.activeSkill = activeSkillSelect.value;
@@ -196,6 +208,10 @@ document.addEventListener('DOMContentLoaded', () => {
         whisperResponseTargetSelect,
         whisperSegmentMsInput,
         geminiKeyInput,
+        dictationEnabledSelect,
+        dictationOutputSelect,
+        dictationRemoveFillersSelect,
+        dictationDictionaryInput,
         windowGapInput
     ];
 
