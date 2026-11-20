@@ -238,6 +238,16 @@
         color: white;
       }
 
+      #dictateButton.listening i {
+        color: #ff4757;
+        text-shadow: 0 0 10px rgba(255, 71, 87, 0.5);
+        animation: pulse 1.2s infinite;
+      }
+      #dictateButton.processing i { color: #fbbf24; animation: pulse 0.8s infinite; }
+      #dictateButton.done i { color: #4caf50; }
+      #dictateButton.error i { color: #f97316; }
+      #dictateButton span:empty { display: none; }
+
       @keyframes pulse {
         0% {
           opacity: 1;
@@ -358,13 +368,17 @@
         <span>⌘⇧S</span>
       </div>
       <div class="command-separator"></div>
-      <div class="command-item" id="micButton">
+      <div class="command-item" id="micButton" title="Ask by voice (Alt+R)">
         <i class="fas fa-microphone"></i>
+      </div>
+      <div class="command-item" id="dictateButton" title="Dictate into any app (Alt+D)">
+        <i class="fas fa-keyboard"></i>
+        <span id="dictateLabel"></span>
       </div>
       <div class="command-separator"></div>
       <div class="command-item" id="skillIndicator">
         <i class="fas fa-brain"></i>
-        <span>DSA</span>
+        <span>General</span>
       </div>
       <div class="command-separator"></div>
       <div class="command-item" id="languageSelector">
@@ -438,7 +452,29 @@
               <span class="kbd">Alt</span>
               + <span class="kbd">R</span>
             </td>
-            <td>Toggle speech</td>
+            <td>Ask by voice (answer in chat/overlay)</td>
+          </tr>
+          <tr>
+            <td>
+              <span class="kbd">Alt</span>
+              + <span class="kbd">D</span>
+            </td>
+            <td>Dictate into any app (press again to insert)</td>
+          </tr>
+          <tr>
+            <td>
+              <span class="kbd">Ctrl/Cmd</span>
+              + <span class="kbd">&uarr;/&darr;</span>
+            </td>
+            <td>Switch answer mode (interactive mode)</td>
+          </tr>
+          <tr>
+            <td>
+              <span class="kbd">Ctrl/Cmd</span>
+              + <span class="kbd">Shift</span>
+              + <span class="kbd">\</span>
+            </td>
+            <td>Clear session memory</td>
           </tr>
           <tr>
             <td>
