@@ -428,6 +428,9 @@ class SpeechService extends EventEmitter {
     this.whisperWorker = new WhisperWorkerService();
     this.isProcessingAudio = false;
     this.manualStopRequested = false;
+    // 'ask' sends transcripts to the answer pipeline (chat/overlay);
+    // 'dictate' records until stopped and hands the text to dictation.
+    this.captureIntent = 'ask';
     this._resetVadState();
 
     this.initializeClient();
@@ -539,7 +542,7 @@ class SpeechService extends EventEmitter {
     }
   }
 
-  startRecording() {
+  startRecording(options = {}) {
     try {
       if (!this.available) {
         const errorMsg = `Speech provider "${this.provider}" is not available`;
@@ -558,6 +561,7 @@ class SpeechService extends EventEmitter {
         return;
       }
 
+      this.captureIntent = options && options.intent === 'dictate' ? 'dictate' : 'ask';
       this.sessionStartTime = Date.now();
       this.retryCount = 0;
 
@@ -585,7 +589,7 @@ class SpeechService extends EventEmitter {
     }
 
     this.isRecording = true;
-    this.emit('recording-started');
+    this.emit('recording-started', { intent: this.captureIntent });
     this.emit('status', 'Azure recording started');
     this._cleanup();
 
@@ -614,7 +618,7 @@ class SpeechService extends EventEmitter {
     this.recognizer.recognized = (s, e) => {
       try {
         if (e.result.reason === sdk.ResultReason.RecognizedSpeech && e.result.text && e.result.text.trim()) {
-          this.emit('transcription', e.result.text);
+          this._emitTranscript(e.result.text);
         }
       } catch (error) {
         logger.error('Error in recognized handler', { error: error.message });
@@ -685,7 +689,7 @@ class SpeechService extends EventEmitter {
     this.pendingFinal = false;
     this.manualStopRequested = false;
     this._resetVadState();
-    this.emit('recording-started');
+    this.emit('recording-started', { intent: this.captureIntent });
     this.emit('status', 'Local Whisper recording started');
 
     if (this.whisperWorker.isConfigured()) {
@@ -1013,6 +1017,7 @@ class SpeechService extends EventEmitter {
         this.emit('recording-stopped');
       }
       this.emit('status', 'Recording stopped');
+      this._emitCaptureFinished();
     }
   }
 
@@ -1020,6 +1025,23 @@ class SpeechService extends EventEmitter {
     this._cleanup();
     this.emit('recording-stopped');
     this.emit('status', statusMessage);
+    this._emitCaptureFinished();
+  }
+
+  /** Route a finished transcript to the right consumer for this capture. */
+  _emitTranscript(text) {
+    this.emit(this.captureIntent === 'dictate' ? 'dictation-transcription' : 'transcription', text);
+  }
+
+  /**
+   * Fired once everything for a capture is done (audio stopped AND the last
+   * segment transcribed). `recording-stopped` fires earlier, before the final
+   * Whisper pass completes, so it can't tell dictation when to insert text.
+   */
+  _emitCaptureFinished() {
+    const intent = this.captureIntent;
+    this.captureIntent = 'ask';
+    this.emit('capture-finished', { intent });
   }
 
   _cleanup() {
@@ -1162,6 +1184,7 @@ class SpeechService extends EventEmitter {
       provider: this.provider,
       isRecording: this.isRecording,
       isProcessingAudio: this.isProcessingAudio,
+      captureIntent: this.captureIntent,
       isInitialized: this.provider === 'azure' ? !!this.speechConfig : !!this.whisperCommand,
       sessionDuration: this.sessionStartTime ? Date.now() - this.sessionStartTime : 0,
       retryCount: this.retryCount,
@@ -1324,7 +1347,9 @@ class SpeechService extends EventEmitter {
   }
 
   _isManualCaptureMode() {
-    return this._getWhisperCaptureMode() === 'manual';
+    // Dictation always records until the user stops it, regardless of the
+    // VAD/manual setting used for answering questions.
+    return this.captureIntent === 'dictate' || this._getWhisperCaptureMode() === 'manual';
   }
 
   _getWhisperCaptureMode() {
@@ -1343,8 +1368,30 @@ class SpeechService extends EventEmitter {
   }
 
   _getManualCaptureMaxMs() {
+    if (this.captureIntent === 'dictate') {
+      const dictationMax = Number(process.env.DICTATION_MAX_MS || 180000);
+      return Number.isFinite(dictationMax) ? Math.max(5000, dictationMax) : 180000;
+    }
     const parsed = Number(process.env.WHISPER_MANUAL_MAX_MS || 90000);
     return Number.isFinite(parsed) ? Math.max(5000, parsed) : 90000;
+  }
+
+  /**
+   * Personal dictionary (names, product and technical terms) passed to
+   * Whisper as its initial prompt so those words are spelled the way the user
+   * wants. Comma or newline separated in DICTATION_DICTIONARY.
+   */
+  _getDictionaryTerms() {
+    return String(process.env.DICTATION_DICTIONARY || '')
+      .split(/[\n,;]+/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .slice(0, 80);
+  }
+
+  _getWhisperInitialPrompt() {
+    const terms = this._getDictionaryTerms();
+    return terms.length ? `Vocabulary: ${terms.join(', ')}.` : '';
   }
 
   _getWhisperDevice() {
@@ -1834,7 +1881,7 @@ class SpeechService extends EventEmitter {
       const transcript = await this._transcribeWhisperBuffer(audioBuffer);
       const clean = transcript ? transcript.trim() : '';
       if (clean && !this._isHallucinatedTranscript(clean)) {
-        this.emit('transcription', clean);
+        this._emitTranscript(clean);
       } else if (clean) {
         logger.debug('Dropped likely Whisper silence hallucination', { transcript: clean });
       }
@@ -1860,6 +1907,14 @@ class SpeechService extends EventEmitter {
     const normalized = text.toLowerCase().replace(/[\s.,!?¡¿"'`]+/g, ' ').trim();
     if (!normalized) {
       return true;
+    }
+    // Whisper sometimes echoes its initial prompt back on near-silence.
+    const prompt = this._getWhisperInitialPrompt();
+    if (prompt) {
+      const normalizedPrompt = prompt.toLowerCase().replace(/[\s.,!?¡¿"'`:;]+/g, ' ').trim();
+      if (normalizedPrompt.includes(normalized.replace(/[:;]/g, '').trim())) {
+        return true;
+      }
     }
     const HALLUCINATIONS = new Set([
       'thank you',
@@ -1904,7 +1959,8 @@ class SpeechService extends EventEmitter {
           model: this._getWhisperModel(),
           language: this._getWhisperLanguage(),
           modelDir: this._getWhisperModelDir(),
-          device: this._getWhisperDevice()
+          device: this._getWhisperDevice(),
+          initialPrompt: this._getWhisperInitialPrompt()
         });
         logger.info('Persistent Whisper transcription completed', {
           processingTime: Date.now() - startedAt,
@@ -1941,6 +1997,11 @@ class SpeechService extends EventEmitter {
 
     if (this._getWhisperModelDir()) {
       args.push('--model_dir', this._getWhisperModelDir());
+    }
+
+    const initialPrompt = this._getWhisperInitialPrompt();
+    if (initialPrompt) {
+      args.push('--initial_prompt', initialPrompt);
     }
 
     try {
