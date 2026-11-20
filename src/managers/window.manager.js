@@ -38,7 +38,7 @@ class WindowManager {
     
     this.windowConfigs = {
       main: {
-        width: 520,
+        width: 700,
         height: 35,
         useContentSize: true,
         file: 'index.html',
@@ -1792,9 +1792,11 @@ class WindowManager {
     }
   }
 
-  handleRecordingStarted() {
+  handleRecordingStarted({ showChat = true } = {}) {
     this.isRecording = true;
-    this.showChatWindow();
+    if (showChat) {
+      this.showChatWindow();
+    }
     // Notify all windows about recording state
     this.broadcastToAllWindows('recording-started');
     logger.debug('Recording started, chat window shown');
