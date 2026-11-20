@@ -38,7 +38,9 @@ It is free and open source. Processing stays on your machine, and the only thing
 - **Configurable streamed answers.** Route voice replies to chat, the floating overlay, or both.
 - **Direct image analysis.** Screenshots go straight to Gemini for visual reasoning, with no slow OCR step in between.
 - **Session memory.** The whole conversation is remembered, so follow-ups, edge cases, and optimizations keep their context.
-- **Language aware.** Tailored answers for C++, C, Python, Java, and JavaScript.
+- **Answers any question.** The default General mode classifies each question (coding, theory, MCQ, aptitude, system design, behavioral, errors) and answers in the right style. DSA, Programming, System Design, and Behavioral modes bias the style further. Switch with `Cmd/Ctrl + Up/Down` or by clicking the mode label.
+- **Local dictation in any app.** Press `Alt + D`, speak, press it again, and the cleaned-up text is pasted at your cursor. Runs on local Whisper, never touches Gemini.
+- **Language aware.** Code answers use your chosen language (C++, C, Python, Java, JavaScript).
 - **Stealthy by design.** Runs under ordinary system names, ships with no telemetry, and keeps your session local.
 - **Cross platform.** Pre-built installers for Windows and Linux (.deb and AppImage). macOS runs from source in one command.
 
@@ -142,12 +144,24 @@ For Azure Speech, create a Speech resource in the [Azure Portal](https://portal.
 2. **Reason.** Gemini reads the audio or image with full conversation context and works toward a precise answer.
 3. **Answer.** Voice responses stream to chat, the overlay, or both, according to Settings.
 
+## Dictation
+
+Dictation is separate from asking questions. `Alt + D` records until you press it again (up to 3 minutes), transcribes locally, tidies the text, and pastes it where your cursor is. The previous clipboard is restored afterwards.
+
+- Cleanup: removes um/uh, fixes "i" and capitalization, understands "new line", "new paragraph", "question mark", and "scratch that".
+- Personal dictionary: set names and terms in Settings (`DICTATION_DICTIONARY`) so they are spelled your way and biased in recognition.
+- Auto-paste needs Accessibility permission on macOS, and `xdotool` (X11) or `wtype` (Wayland) on Linux. Without it the text stays on your clipboard and the overlay says so.
+- It needs local Whisper (`SPEECH_PROVIDER=whisper`); with Azure it is unavailable.
+
 ## Keyboard shortcuts
 
 | Action | Shortcut | Description |
 |---|---|---|
 | Screenshot capture | `Cmd/Ctrl + Shift + S` | Capture the screen and analyze it with Gemini |
-| Toggle speech | `Alt + R` | Start or stop voice recognition, if configured |
+| Ask by voice | `Alt + R` | Start or stop voice capture; the answer streams to chat/overlay |
+| Dictate | `Alt + D` | Start or stop dictation; text is pasted into the focused app |
+| Switch answer mode | `Cmd/Ctrl + Up/Down` | Cycle General, DSA, Programming, System Design, Behavioral (interactive mode) |
+| Clear session memory | `Cmd/Ctrl + Shift + \` | Forget the conversation so far |
 | Toggle visibility | `Cmd/Ctrl + Shift + V` | Show or hide all windows |
 | Toggle interaction | `Cmd/Ctrl + Shift + I` or `Alt + A` | Enable or disable click through |
 | Open chat | `Cmd/Ctrl + Shift + C` | Open the interactive chat window |
@@ -169,7 +183,8 @@ OpenCluely is under active development. The core is stable and improvements ship
 - AI response window with markdown and syntax highlighting
 - Global shortcuts for capture, visibility, interaction, chat, and settings
 - Session memory and a full chat UI
-- Language picker and a DSA skill prompt
+- Language picker and General, DSA, Programming, System Design, and Behavioral answer modes
+- Local dictation into any app with a personal dictionary
 - Optional Azure Speech and local Whisper, with an auto hiding mic button
 - Multi-monitor and area capture support
 - Window binding and positioning
