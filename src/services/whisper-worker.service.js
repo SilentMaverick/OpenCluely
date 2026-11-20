@@ -47,7 +47,8 @@ class WhisperWorkerService {
       model: options.model || 'small',
       language: options.language || 'auto',
       model_dir: options.modelDir || null,
-      device: options.device || 'auto'
+      device: options.device || 'auto',
+      initial_prompt: options.initialPrompt || null
     });
     this._scheduleIdleUnload();
     return result;
