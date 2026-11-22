@@ -107,14 +107,20 @@ const llmService = require("./src/services/llm.service");
 // Managers
 const windowManager = require("./src/managers/window.manager");
 const sessionManager = require("./src/managers/session.manager");
+const skills = require("./src/core/skills");
+const DictationService = require("./src/services/dictation.service");
 
 class ApplicationController {
   constructor() {
     this.isReady = false;
     this.starting = false;
-    this.activeSkill = "dsa";
-  // Default to C++ so language is enforced from first run
-  this.codingLanguage = "cpp";
+    // Answer mode and coding language persist in .env so they survive restarts.
+    // "general" answers any question type; the other modes bias the style.
+    this.activeSkill = skills.normalizeSkill(process.env.OPENCLUELY_MODE || skills.DEFAULT_SKILL);
+    this.codingLanguage = ["cpp", "c", "python", "java", "javascript"].includes(process.env.OPENCLUELY_CODING_LANGUAGE)
+      ? process.env.OPENCLUELY_CODING_LANGUAGE
+      : "cpp";
+    sessionManager.currentSkill = this.activeSkill;
     this.speechAvailable = false;
 
     // Utterance coalescing: VAD emits a transcript per natural pause, but a
@@ -150,6 +156,17 @@ class ApplicationController {
       llmResponse: { title: "AI Response" },
       settings: { title: "Settings" },
     };
+
+    // Local press-to-talk dictation into whichever app has focus.
+    const TextInserter = require("./src/services/text-inserter.service");
+    this.dictation = new DictationService({
+      speechService,
+      inserter: new TextInserter(),
+      ownWindowFocused: () => BrowserWindow.getAllWindows().some((w) => !w.isDestroyed() && w.isFocused()),
+    });
+    this.dictation.on("state", (payload) => {
+      windowManager.broadcastToAllWindows("dictation-state", payload);
+    });
 
     this.setupStealth();
     this.setupEventHandlers();
@@ -398,6 +415,7 @@ class ApplicationController {
       "CommandOrControl+,": () => windowManager.showSettings(),
       "Alt+A": () => windowManager.toggleInteraction(),
       "Alt+R": () => this.toggleSpeechRecognition(),
+      [process.env.DICTATION_SHORTCUT || "Alt+D"]: () => this.dictation.toggle(),
       "CommandOrControl+Shift+T": () => windowManager.forceAlwaysOnTopForAllWindows(),
       "CommandOrControl+Shift+Alt+T": () => {
         const results = windowManager.testAlwaysOnTopForAllWindows();
@@ -417,8 +435,10 @@ class ApplicationController {
   }
 
   setupServiceEventHandlers() {
-    speechService.on("recording-started", () => {
-      windowManager.handleRecordingStarted();
+    speechService.on("recording-started", (info) => {
+      // Dictation must not pop up (and focus) the chat window: focus has to
+      // stay in the app the text is going into.
+      windowManager.handleRecordingStarted({ showChat: !(info && info.intent === "dictate") });
     });
 
     speechService.on("recording-stopped", () => {
@@ -437,9 +457,13 @@ class ApplicationController {
 
     speechService.on("status", (status) => {
       this.speechAvailable = speechService.isAvailable ? speechService.isAvailable() : false;
-      BrowserWindow.getAllWindows().forEach((window) => {
-        window.webContents.send("speech-status", { status, available: this.speechAvailable });
-      });
+      // Dictation reports through its own "dictation-state" channel; keep its
+      // recorder chatter out of the chat transcript.
+      if (!this.dictation.isActive()) {
+        BrowserWindow.getAllWindows().forEach((window) => {
+          window.webContents.send("speech-status", { status, available: this.speechAvailable });
+        });
+      }
       // Also broadcast availability specifically
       BrowserWindow.getAllWindows().forEach((window) => {
         window.webContents.send("speech-availability", { available: this.speechAvailable });
@@ -449,6 +473,7 @@ class ApplicationController {
     speechService.on("error", (error) => {
       // In error, still compute availability
       this.speechAvailable = speechService.isAvailable ? speechService.isAvailable() : false;
+      if (this.dictation.isActive()) return;
       BrowserWindow.getAllWindows().forEach((window) => {
         window.webContents.send("speech-error", { error, available: this.speechAvailable });
       });
@@ -474,6 +499,11 @@ class ApplicationController {
     
     ipcMain.handle("get-speech-availability", () => {
       return speechService.isAvailable ? speechService.isAvailable() : false;
+    });
+
+    ipcMain.handle("toggle-dictation", () => {
+      this.dictation.toggle();
+      return this.dictation.getState();
     });
 
     ipcMain.handle("start-speech-recognition", () => {
@@ -502,15 +532,6 @@ class ApplicationController {
       speechService.stopRecording();
     });
 
-    ipcMain.on("chat-window-ready", () => {
-      // Send a test message to confirm communication
-      setTimeout(() => {
-        windowManager.broadcastToAllWindows("transcription-received", {
-          text: "Test message from main process - chat window communication is working!",
-        });
-      }, 1000);
-    });
-
     ipcMain.on("main-window-ready", () => {
       // Re-check availability whenever the main overlay finishes loading;
       // this covers first-run where the window was hidden during onboarding.
@@ -522,12 +543,6 @@ class ApplicationController {
         if (!win.isDestroyed()) {
           win.webContents.send("speech-availability", { available: this.speechAvailable });
         }
-      });
-    });
-
-    ipcMain.on("test-chat-window", () => {
-      windowManager.broadcastToAllWindows("transcription-received", {
-        text: "🧪 IMMEDIATE TEST: Chat window IPC communication test successful!",
       });
     });
 
@@ -618,10 +633,7 @@ class ApplicationController {
     });
 
     ipcMain.handle("send-chat-message", async (event, text) => {
-      // Add chat message to session memory
-      sessionManager.addUserInput(text, 'chat');
-      logger.debug('Chat message added to session memory', { textLength: text.length });
-
+      // processWithLLM records the message in session memory exactly once.
       // Typed messages need the full skill pipeline (with history context),
       // NOT the voice "intelligent filter" pipeline. Voice keeps its filter
       // behaviour; typed chat goes through processWithLLM so it gets real
@@ -849,9 +861,8 @@ class ApplicationController {
     });
 
     ipcMain.handle("update-active-skill", (event, skill) => {
-      this.activeSkill = skill;
-      windowManager.broadcastToAllWindows("skill-changed", { skill });
-      return { success: true };
+      const applied = this.setActiveSkill(skill);
+      return { success: true, skill: applied };
     });
 
     ipcMain.handle("restart-app-for-stealth", () => {
@@ -924,8 +935,7 @@ class ApplicationController {
 
     // Handle update skill
     ipcMain.on("update-skill", (event, skill) => {
-      this.activeSkill = skill;
-      windowManager.broadcastToAllWindows("skill-updated", { skill });
+      this.setActiveSkill(skill);
     });
 
     // Handle quit app (alternative method)
@@ -952,6 +962,13 @@ class ApplicationController {
         windowManager.broadcastToAllWindows("speech-status", { status: 'Speech recognition unavailable', available: false });
         windowManager.broadcastToAllWindows("speech-availability", { available: false });
       } catch (e) {}
+      return;
+    }
+    if (this.dictation.isActive()) {
+      windowManager.broadcastToAllWindows("dictation-state", {
+        state: "listening",
+        message: "Dictation is running. Press the dictation shortcut to finish it first.",
+      });
       return;
     }
     const currentStatus = speechService.getStatus();
@@ -1028,41 +1045,46 @@ class ApplicationController {
   }
 
   navigateSkill(direction) {
-    const availableSkills = [
-      "dsa",
-    ];
-
-    const currentIndex = availableSkills.indexOf(this.activeSkill);
-    if (currentIndex === -1) {
-      logger.warn("Current skill not found in available skills", {
-        currentSkill: this.activeSkill,
-        availableSkills,
-      });
-      return;
-    }
-
-    // Calculate new index with wrapping
-    let newIndex = currentIndex + direction;
-    if (newIndex >= availableSkills.length) {
-      newIndex = 0; // Wrap to beginning
-    } else if (newIndex < 0) {
-      newIndex = availableSkills.length - 1; // Wrap to end
-    }
-
-    const newSkill = availableSkills[newIndex];
-    this.activeSkill = newSkill;
-
-    // Update session manager with the new skill
-    sessionManager.setActiveSkill(newSkill);
-
+    const from = this.activeSkill;
+    const to = this.setActiveSkill(skills.nextSkill(this.activeSkill, direction));
     logger.info("Skill navigated via global shortcut", {
-      from: availableSkills[currentIndex],
-      to: newSkill,
+      from,
+      to,
       direction: direction > 0 ? "down" : "up",
     });
+  }
 
-    // Broadcast the skill change to all windows
-    windowManager.broadcastToAllWindows("skill-updated", { skill: newSkill });
+  /**
+   * One place to change the answer mode: keeps the controller, session
+   * manager, every window (both legacy event names) and .env in sync.
+   * Previously each entry point updated a different subset, so e.g. the
+   * overlay label did not change when the mode was switched by shortcut.
+   */
+  setActiveSkill(skill, { persist = true } = {}) {
+    const next = skills.normalizeSkill(skill);
+    const changed = next !== this.activeSkill;
+    this.activeSkill = next;
+    if (changed) {
+      sessionManager.setActiveSkill(next);
+    }
+    windowManager.broadcastToAllWindows("skill-changed", { skill: next });
+    windowManager.broadcastToAllWindows("skill-updated", { skill: next });
+    if (persist && changed) {
+      this.persistEnvUpdates({ OPENCLUELY_MODE: next });
+    }
+    return next;
+  }
+
+  setCodingLanguage(language) {
+    const allowed = ["cpp", "c", "python", "java", "javascript"];
+    if (!allowed.includes(language)) return this.codingLanguage;
+    const changed = language !== this.codingLanguage;
+    this.codingLanguage = language;
+    windowManager.broadcastToAllWindows("coding-language-changed", { language });
+    if (changed) {
+      this.persistEnvUpdates({ OPENCLUELY_CODING_LANGUAGE: language });
+    }
+    return language;
   }
 
   async triggerScreenshotOCR() {
@@ -1087,8 +1109,7 @@ class ApplicationController {
       // Use image directly with LLM and active skill; do not send chat messages here
       const sessionHistory = sessionManager.getOptimizedHistory();
 
-      const skillsRequiringProgrammingLanguage = ['dsa'];
-      const needsProgrammingLanguage = skillsRequiringProgrammingLanguage.includes(this.activeSkill);
+      const needsProgrammingLanguage = skills.skillUsesCodingLanguage(this.activeSkill);
 
       this._responseSeq = (this._responseSeq || 0) + 1;
       const messageId = `img-${Date.now()}-${this._responseSeq}`;
@@ -1112,6 +1133,14 @@ class ApplicationController {
       );
       llmResult.metadata = { ...llmResult.metadata, messageId };
 
+      // Record a user turn for the screenshot so follow-ups ("optimize it",
+      // "explain option C") have a question to attach to in the history.
+      sessionManager.addConversationEvent({
+        role: 'user',
+        content: '[Shared a screenshot of the question for analysis]',
+        action: 'screenshot_question',
+        metadata: { source: 'screenshot' }
+      });
       sessionManager.addModelResponse(llmResult.response, {
         skill: this.activeSkill,
         processingTime: llmResult.metadata.processingTime,
@@ -1153,8 +1182,7 @@ class ApplicationController {
       sessionManager.addUserInput(text, 'llm_input');
 
       // Check if current skill needs programming language context
-      const skillsRequiringProgrammingLanguage = ['dsa'];
-      const needsProgrammingLanguage = skillsRequiringProgrammingLanguage.includes(this.activeSkill);
+      const needsProgrammingLanguage = skills.skillUsesCodingLanguage(this.activeSkill);
 
       this._responseSeq = (this._responseSeq || 0) + 1;
       const messageId = `chat-${Date.now()}-${this._responseSeq}`;
@@ -1322,8 +1350,7 @@ class ApplicationController {
       });
 
       // Check if current skill needs programming language context
-      const skillsRequiringProgrammingLanguage = ['dsa'];
-      const needsProgrammingLanguage = skillsRequiringProgrammingLanguage.includes(this.activeSkill);
+      const needsProgrammingLanguage = skills.skillUsesCodingLanguage(this.activeSkill);
 
       // Stream the answer progressively to the configured speech target.
       // A unique messageId ties the start/chunk/final events to one bubble so
@@ -1386,7 +1413,7 @@ class ApplicationController {
 
       // Try to provide a fallback response
       try {
-        const fallbackResult = llmService.generateIntelligentFallbackResponse(text, this.activeSkill);
+        const fallbackResult = llmService.generateIntelligentFallbackResponse(text, this.activeSkill, error);
         // Carry the streaming messageId so the target replaces the live
         // bubble instead of leaving it stuck and appending a duplicate.
         if (messageId) {
@@ -1590,7 +1617,7 @@ class ApplicationController {
     // distinguish "unset" from "stale value from a previous load".
     return {
       codingLanguage: this.codingLanguage || "cpp",
-      activeSkill: this.activeSkill || "dsa",
+      activeSkill: this.activeSkill || skills.DEFAULT_SKILL,
       appIcon: this.appIcon || "terminal",
       selectedIcon: this.appIcon || "terminal",
       windowGap: windowManager.windowGap,
@@ -1606,6 +1633,10 @@ class ApplicationController {
         (process.env.WHISPER_MANUAL_CAPTURE === "true" ? "manual" : "vad"),
       whisperResponseTarget: process.env.WHISPER_RESPONSE_TARGET || "both",
       whisperSegmentMs: process.env.WHISPER_SEGMENT_MS || "4000",
+      dictationEnabled: String(process.env.DICTATION_ENABLED || "true").toLowerCase() !== "false",
+      dictationOutput: process.env.DICTATION_OUTPUT === "clipboard" ? "clipboard" : "paste",
+      dictationDictionary: process.env.DICTATION_DICTIONARY || "",
+      dictationRemoveFillers: String(process.env.DICTATION_REMOVE_FILLERS || "true").toLowerCase() !== "false",
       geminiKey: process.env.GEMINI_API_KEY || "",
 
       azureConfigured: !!process.env.AZURE_SPEECH_KEY && !!process.env.AZURE_SPEECH_REGION,
@@ -1617,16 +1648,10 @@ class ApplicationController {
     try {
       // ── In-memory updates + window broadcasts ──
       if (settings.codingLanguage) {
-        this.codingLanguage = settings.codingLanguage;
-        windowManager.broadcastToAllWindows("coding-language-changed", {
-          language: settings.codingLanguage,
-        });
+        this.setCodingLanguage(settings.codingLanguage);
       }
-      if (settings.activeSkill) {
-        this.activeSkill = settings.activeSkill;
-        windowManager.broadcastToAllWindows("skill-updated", {
-          skill: settings.activeSkill,
-        });
+      if (settings.activeSkill && skills.normalizeSkill(settings.activeSkill) !== this.activeSkill) {
+        this.setActiveSkill(settings.activeSkill);
       }
       if (settings.appIcon) {
         this.appIcon = settings.appIcon;
@@ -1674,6 +1699,18 @@ class ApplicationController {
       }
       if (settings.whisperSegmentMs !== undefined) {
         envUpdates.WHISPER_SEGMENT_MS = String(settings.whisperSegmentMs);
+      }
+      if (settings.dictationEnabled !== undefined) {
+        envUpdates.DICTATION_ENABLED = settings.dictationEnabled === false || settings.dictationEnabled === "false" ? "false" : "true";
+      }
+      if (["paste", "clipboard"].includes(settings.dictationOutput)) {
+        envUpdates.DICTATION_OUTPUT = settings.dictationOutput;
+      }
+      if (settings.dictationDictionary !== undefined) {
+        envUpdates.DICTATION_DICTIONARY = String(settings.dictationDictionary).replace(/\s*[\r\n]+\s*/g, ", ");
+      }
+      if (settings.dictationRemoveFillers !== undefined) {
+        envUpdates.DICTATION_REMOVE_FILLERS = settings.dictationRemoveFillers === false || settings.dictationRemoveFillers === "false" ? "false" : "true";
       }
       if (settings.geminiKey !== undefined) {
         envUpdates.GEMINI_API_KEY = settings.geminiKey;

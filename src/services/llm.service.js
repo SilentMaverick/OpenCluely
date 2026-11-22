@@ -219,7 +219,7 @@ class LLMService {
       });
 
       if (config.get('llm.gemini.fallbackEnabled')) {
-        return this.generateFallbackResponse('[image]', activeSkill);
+        return this.generateFallbackResponse('[image]', activeSkill, error);
       }
       throw error;
     }
@@ -298,8 +298,15 @@ class LLMService {
   }
 
   formatImageInstruction(activeSkill, programmingLanguage) {
-    const langNote = programmingLanguage ? ` Use only ${programmingLanguage.toUpperCase()} for any code.` : '';
-    return `Analyze this image for a ${activeSkill.toUpperCase()} question. Extract the problem concisely and provide the best possible solution with explanation and final code.${langNote}`;
+    const langNote = programmingLanguage
+      ? ` If code is needed and the screenshot does not fix the language, use ${String(programmingLanguage).toUpperCase()}.`
+      : '';
+    return [
+      'Read everything visible in this screenshot and work out what is being asked.',
+      'It may be a coding problem, a multiple-choice or aptitude question, a theory question, an error or stack trace, a diagram, or several questions at once.',
+      'Answer it following the system instructions: for multiple choice, give the correct option(s) on the first line; for several questions, answer each one, numbered; if a code template or function signature is visible, use it exactly.',
+      'Do not describe the screenshot itself unless that is the question.' + langNote
+    ].join(' ');
   }
 
   async processTextWithSkill(text, activeSkill, sessionMemory = [], programmingLanguage = null) {
@@ -382,7 +389,7 @@ class LLMService {
       });
 
       if (config.get('llm.gemini.fallbackEnabled')) {
-        return this.generateFallbackResponse(text, activeSkill);
+        return this.generateFallbackResponse(text, activeSkill, error);
       }
 
       throw error;
@@ -518,7 +525,7 @@ class LLMService {
       });
 
       if (config.get('llm.gemini.fallbackEnabled')) {
-        return this.generateIntelligentFallbackResponse(text, activeSkill);
+        return this.generateIntelligentFallbackResponse(text, activeSkill, error);
       }
       
       throw error;
@@ -536,21 +543,78 @@ class LLMService {
       const fenceTagMap = { cpp: 'cpp', c: 'c', python: 'python', java: 'java', javascript: 'javascript', js: 'javascript' };
       const fenceTag = fenceTagMap[norm] || norm || 'text';
 
-      // Replace all triple-backtick fences' language token with the selected tag
-      const replacedBackticks = text.replace(/```([^\n]*)\n/g, (match, info) => {
-        const current = (info || '').trim();
-        // If already the desired fenceTag as the first token, keep as is
-        if (current.split(/\s+/)[0].toLowerCase() === fenceTag) return match;
-        return '```' + fenceTag + '\n';
-      });
+      // Only fix fences that are untagged or tagged with one of the selectable
+      // general-purpose languages (a model slip like ```python in C++ mode).
+      // SQL, shell, JSON, YAML, Mermaid, HTML etc. are legitimately different
+      // languages in a general answer and must keep their own tag.
+      const retaggable = new Set(['', 'cpp', 'c++', 'cc', 'cxx', 'c', 'h', 'hpp', 'python', 'py', 'python3', 'java',
+        'javascript', 'js', 'node', 'typescript', 'ts', 'code', 'pseudo', 'pseudocode', 'plaintext', 'text']);
 
-      // Optionally normalize tildes fences to backticks with correct tag
-      const normalizedTildes = replacedBackticks.replace(/~~~([^\n]*)\n/g, () => '```' + fenceTag + '\n');
-
-      return normalizedTildes;
+      // Walk line by line so we only touch OPENING fences; a bare closing
+      // fence must never be treated as an untagged opening one.
+      let openMarker = null;
+      return text.split('\n').map((line) => {
+        const m = line.match(/^(\s*)(`{3,}|~{3,})(.*)$/);
+        if (!m) return line;
+        const [, indent, marker, info] = m;
+        if (openMarker) {
+          if (marker[0] === openMarker[0] && marker.length >= openMarker.length && !info.trim()) {
+            openMarker = null;
+          }
+          return line;
+        }
+        openMarker = marker;
+        const current = info.trim().split(/\s+/)[0].toLowerCase();
+        if (current === fenceTag || !retaggable.has(current)) return line;
+        return `${indent}${marker}${fenceTag}`;
+      }).join('\n');
     } catch (_) {
       return text;
     }
+  }
+
+  /**
+   * Turn session history plus the current input into Gemini `contents`.
+   *
+   * The controller records each user input in the session *before* calling
+   * the model, so the tail of the history already contains the message being
+   * answered (for speech, as several fragments). Appending the current text
+   * again made the model see every question two or three times. Here the
+   * trailing user turns are folded into the current message instead, keeping
+   * anything they contain that the current text does not.
+   *
+   * Consecutive same-role turns are merged and a leading model turn dropped,
+   * so the request always alternates user/model starting with user.
+   */
+  buildContentsFromHistory(conversationHistory, currentText, maxEntries = 30) {
+    const turns = (conversationHistory || [])
+      .filter((event) => event && event.role !== 'system' && typeof event.content === 'string' && event.content.trim())
+      .map((event) => ({ role: event.role === 'model' ? 'model' : 'user', text: event.content.trim() }));
+
+    const current = String(currentText || '').trim();
+    const pending = [];
+    while (turns.length && turns[turns.length - 1].role === 'user') {
+      pending.unshift(turns.pop().text);
+    }
+    const currentLower = current.toLowerCase();
+    const extra = pending.filter((t) => !currentLower.includes(t.toLowerCase()));
+    const finalText = [...extra, current].filter(Boolean).join('\n');
+
+    const recent = turns.slice(-maxEntries);
+    while (recent.length && recent[0].role !== 'user') {
+      recent.shift();
+    }
+
+    const contents = [];
+    for (const turn of [...recent, { role: 'user', text: finalText }]) {
+      const last = contents[contents.length - 1];
+      if (last && last.role === turn.role) {
+        last.parts[0].text += `\n\n${turn.text}`;
+      } else {
+        contents.push({ role: turn.role, parts: [{ text: turn.text }] });
+      }
+    }
+    return contents;
   }
 
   buildGeminiRequest(text, activeSkill, sessionMemory, programmingLanguage) {
@@ -558,7 +622,7 @@ class LLMService {
     const sessionManager = require('../managers/session.manager');
     
     if (sessionManager && typeof sessionManager.getConversationHistory === 'function') {
-      const conversationHistory = sessionManager.getConversationHistory(15);
+      const conversationHistory = sessionManager.getConversationHistory(40);
       const skillContext = sessionManager.getSkillContext(activeSkill, programmingLanguage);
       return this.buildGeminiRequestWithHistory(text, activeSkill, conversationHistory, skillContext, programmingLanguage);
     }
@@ -621,36 +685,11 @@ class LLMService {
       });
     }
 
-    // Add conversation history (excluding system messages) with validation
-    const conversationContents = conversationHistory
-      .filter(event => {
-        return event.role !== 'system' && 
-               event.content && 
-               typeof event.content === 'string' && 
-               event.content.trim().length > 0;
-      })
-      .map(event => {
-        const content = event.content.trim();
-        return {
-          role: event.role === 'model' ? 'model' : 'user',
-          parts: [{ text: content }]
-        };
-      });
-
-    // Add the conversation history
-    request.contents.push(...conversationContents);
-
-    // Format and validate the current user input
     const formattedMessage = this.formatUserMessage(text, activeSkill);
     if (!formattedMessage || formattedMessage.trim().length === 0) {
       throw new Error('Failed to format user message or message is empty');
     }
-
-    // Add the current user input
-    request.contents.push({
-      role: 'user',
-      parts: [{ text: formattedMessage }]
-    });
+    request.contents.push(...this.buildContentsFromHistory(conversationHistory, formattedMessage, 30));
 
     logger.debug('Built Gemini request with conversation history', {
       skill: activeSkill,
@@ -675,7 +714,7 @@ class LLMService {
     const sessionManager = require('../managers/session.manager');
     
     if (sessionManager && typeof sessionManager.getConversationHistory === 'function') {
-      const conversationHistory = sessionManager.getConversationHistory(10);
+      const conversationHistory = sessionManager.getConversationHistory(30);
       const skillContext = sessionManager.getSkillContext(activeSkill, programmingLanguage);
       return this.buildIntelligentTranscriptionRequestWithHistory(cleanText, activeSkill, conversationHistory, skillContext, programmingLanguage);
     }
@@ -719,123 +758,52 @@ class LLMService {
 
     this.applyGenerationDefaults(request);
 
-  // For chat/transcription messages, DO NOT include the full skill prompt; use only the intelligent filter prompt
-  const intelligentPrompt = this.getIntelligentTranscriptionPrompt(activeSkill, programmingLanguage);
-  request.systemInstruction = { parts: [{ text: intelligentPrompt }] };
+    // Voice uses the same mode prompt as typed chat and screenshots, plus a
+    // short addendum about live transcripts. Previously voice got a separate
+    // "filter" prompt that refused anything outside the current mode.
+    request.systemInstruction = {
+      parts: [{ text: this.getIntelligentTranscriptionPrompt(activeSkill, programmingLanguage, skillContext && skillContext.skillPrompt) }]
+    };
 
-    // Add recent conversation history (excluding system messages) with validation
-    const conversationContents = conversationHistory
-      .filter(event => {
-        // Filter out system messages and ensure content exists and is valid
-        return event.role !== 'system' && 
-               event.content && 
-               typeof event.content === 'string' && 
-               event.content.trim().length > 0;
-      })
-      .slice(-8) // Keep last 8 exchanges for context
-      .map(event => {
-        const content = event.content.trim();
-        if (!content) {
-          logger.warn('Empty content found in conversation history', { event });
-          return null;
-        }
-        return {
-          role: event.role === 'model' ? 'model' : 'user',
-          parts: [{ text: content }]
-        };
-      })
-      .filter(content => content !== null); // Remove any null entries
-
-    // Add the conversation history
-    request.contents.push(...conversationContents);
-
-    // Validate and add the current transcription
     const cleanText = text && typeof text === 'string' ? text.trim() : '';
     if (!cleanText) {
       throw new Error('Empty or invalid transcription text provided');
     }
 
-    request.contents.push({
-      role: 'user',
-      parts: [{ text: cleanText }]
-    });
+    request.contents.push(...this.buildContentsFromHistory(conversationHistory, cleanText, 20));
 
-    // Ensure we have at least one content item
-    if (request.contents.length === 0) {
-      throw new Error('No valid content to send to Gemini API');
-    }
-
-    logger.debug('Built intelligent transcription request with conversation history', {
+    logger.debug('Built transcription request with conversation history', {
       skill: activeSkill,
       programmingLanguage: programmingLanguage || 'not specified',
       historyLength: conversationHistory.length,
       totalContents: request.contents.length,
-      hasSkillPrompt: !!skillContext.skillPrompt,
-      cleanTextLength: cleanText.length,
-      requiresProgrammingLanguage: skillContext.requiresProgrammingLanguage || false
+      cleanTextLength: cleanText.length
     });
 
     return request;
   }
 
-  getIntelligentTranscriptionPrompt(activeSkill, programmingLanguage) {
-    let prompt = `# Intelligent Transcription Response System
+  getVoiceAddendum() {
+    return `
 
-Assume you are asked a question in ${activeSkill.toUpperCase()} mode. Your job is to intelligently respond to question/message with appropriate brevity.
-Assume you are in an interview and you need to perform best in ${activeSkill.toUpperCase()} mode.
-Always respond to the point, do not repeat the question or unnecessary information which is not related to ${activeSkill}.`;
+## LIVE VOICE INPUT
+The user message is a live speech-to-text transcript. It may be the interviewer's question, the user's own question, or both, and it can contain recognition mistakes, missing punctuation, or a sentence split across turns.
+- Work out the intended question and answer it fully in the style above. Silently fix misheard technical terms (for example "has map" means "hash map", "big o of in" means "O(n)", "sequel" may mean "SQL").
+- Answer every real question, whatever the topic. Never reply that a question is outside the current mode.
+- If the transcript contains no question or task at all (greetings, "can you hear me", "okay", "let me think", filler), reply with one short line such as "Listening — go ahead." and nothing else.
+- If it is clearly a continuation of the previous question, treat it as a follow-up and use the conversation history.
+- Put the answer the user should say first, so it can be read out immediately.`;
+  }
 
-    // Add programming language context if provided
-    if (programmingLanguage) {
-      const lang = String(programmingLanguage).toLowerCase();
-      const languageMap = { cpp: 'C++', c: 'C', python: 'Python', java: 'Java', javascript: 'JavaScript', js: 'JavaScript' };
-      const fenceTagMap = { cpp: 'cpp', c: 'c', python: 'python', java: 'java', javascript: 'javascript', js: 'javascript' };
-      const languageTitle = languageMap[lang] || (lang.charAt(0).toUpperCase() + lang.slice(1));
-      const fenceTag = fenceTagMap[lang] || lang || 'text';
-      prompt += `\n\nCODING CONTEXT: Respond ONLY in ${languageTitle}. All code blocks must use triple backticks with language tag \`\`\`${fenceTag}\`\`\`. Do not include other languages unless explicitly asked.`;
-    }
-
-    prompt += `
-
-## Response Rules:
-
-### If the transcription is casual conversation, greetings, or NOT related to ${activeSkill}:
-- Respond with: "Yeah, I'm listening. Ask your question relevant to ${activeSkill}."
-- Or similar brief acknowledgments like: "I'm here, what's your ${activeSkill} question?"
-
-### If the transcription IS relevant to ${activeSkill} or is a follow-up question:
-- Provide a comprehensive, detailed response
-- Use bullet points, examples, and explanations
-- Focus on actionable insights and complete answers
-- Do not truncate or shorten your response
-
-### Examples of casual/irrelevant messages:
-- "Hello", "Hi there", "How are you?"
-- "What's the weather like?"
-- "I'm just testing this"
-- Random conversations not related to ${activeSkill}
-
-### Examples of relevant messages:
-- Actual questions about ${activeSkill} concepts
-- Follow-up questions to previous responses
-- Requests for clarification on ${activeSkill} topics
-- Problem-solving requests related to ${activeSkill}
-
-## Response Format:
-- Keep responses detailed
-- Use bullet points for structured answers
-- Be encouraging and helpful
-- Stay focused on ${activeSkill}
-
-If the user's input is a coding or DSA problem statement and contains no code, produce a complete, runnable solution in the selected programming language without asking for more details. Always include the final implementation in a properly tagged code block.
-
-Remember: Be intelligent about filtering - only provide detailed responses when the user actually needs help with ${activeSkill}.`;
-
-    return prompt;
+  getIntelligentTranscriptionPrompt(activeSkill, programmingLanguage, basePrompt = null) {
+    const base = basePrompt || promptLoader.getSkillPrompt(activeSkill, programmingLanguage) || '';
+    return `${base}${this.getVoiceAddendum()}`;
   }
 
   formatUserMessage(text, activeSkill) {
-    return `Context: ${activeSkill.toUpperCase()} analysis request\n\nText to analyze:\n${text}`;
+    // The mode lives in the system instruction; the user turn is the question
+    // itself, so follow-ups in history read naturally.
+    return String(text || '').trim();
   }
 
   async executeRequest(geminiRequest) {
@@ -1323,70 +1291,44 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
     });
   }
 
-  generateFallbackResponse(text, activeSkill) {
-    logger.info('Generating fallback response', { activeSkill });
-
-    const fallbackResponses = {
-      'dsa': 'This appears to be a data structures and algorithms problem. Consider breaking it down into smaller components and identifying the appropriate algorithm or data structure to use.',
-      'system-design': 'For this system design question, consider scalability, reliability, and the trade-offs between different architectural approaches.',
-      'programming': 'This looks like a programming challenge. Focus on understanding the requirements, edge cases, and optimal time/space complexity.',
-      'default': 'I can help analyze this content. Please ensure your Gemini API key is properly configured for detailed analysis.'
-    };
-
-    const response = fallbackResponses[activeSkill] || fallbackResponses.default;
-    
-    return {
-      response,
-      metadata: {
-        skill: activeSkill,
-        processingTime: 0,
-        requestId: this.requestCount,
-        usedFallback: true
-      }
-    };
+  /**
+   * Message shown when Gemini could not be reached. It says plainly that no
+   * answer was generated (and why), instead of a canned pseudo-answer that
+   * looked like real help.
+   */
+  describeFailure(error) {
+    const message = String((error && error.message) || error || '').trim();
+    const lower = message.toLowerCase();
+    if (!this.isInitialized || lower.includes('api key') || lower.includes('api_key') || lower.includes('permission') || lower.includes('401') || lower.includes('403')) {
+      return 'Check that your Gemini API key in Settings is valid.';
+    }
+    if (lower.includes('429') || lower.includes('quota') || lower.includes('rate')) {
+      return 'Gemini rate limit or quota reached. Wait a moment and try again.';
+    }
+    if (lower.includes('timeout') || lower.includes('network') || lower.includes('enotfound') || lower.includes('econn') || lower.includes('fetch')) {
+      return 'Network problem reaching Gemini. Check your connection and try again.';
+    }
+    return message ? `Gemini error: ${message.slice(0, 200)}` : 'Try again in a moment.';
   }
 
-  generateIntelligentFallbackResponse(text, activeSkill) {
-    logger.info('Generating intelligent fallback response for transcription', { activeSkill });
-
-    // Simple heuristic to determine if message seems skill-related
-    const skillKeywords = {
-      'dsa': ['algorithm', 'data structure', 'array', 'tree', 'graph', 'sort', 'search', 'complexity', 'big o'],
-      'programming': ['code', 'function', 'variable', 'class', 'method', 'bug', 'debug', 'syntax'],
-      'system-design': ['scalability', 'database', 'architecture', 'microservice', 'load balancer', 'cache'],
-      'behavioral': ['interview', 'experience', 'situation', 'leadership', 'conflict', 'team'],
-      'sales': ['customer', 'deal', 'negotiation', 'price', 'revenue', 'prospect'],
-      'presentation': ['slide', 'audience', 'public speaking', 'presentation', 'nervous'],
-      'data-science': ['data', 'model', 'machine learning', 'statistics', 'analytics', 'python', 'pandas'],
-      'devops': ['deployment', 'ci/cd', 'docker', 'kubernetes', 'infrastructure', 'monitoring'],
-      'negotiation': ['negotiate', 'compromise', 'agreement', 'terms', 'conflict resolution']
-    };
-
-    const textLower = text.toLowerCase();
-    const relevantKeywords = skillKeywords[activeSkill] || [];
-    const hasRelevantKeywords = relevantKeywords.some(keyword => textLower.includes(keyword));
-    
-    // Check for question indicators
-    const questionIndicators = ['how', 'what', 'why', 'when', 'where', 'can you', 'could you', 'should i', '?'];
-    const seemsLikeQuestion = questionIndicators.some(indicator => textLower.includes(indicator));
-
-    let response;
-    if (hasRelevantKeywords || seemsLikeQuestion) {
-      response = `I'm having trouble processing that right now, but it sounds like a ${activeSkill} question. Could you rephrase or ask more specifically about what you need help with?`;
-    } else {
-      response = `Yeah, I'm listening. Ask your question relevant to ${activeSkill}.`;
-    }
-    
+  generateFallbackResponse(text, activeSkill, error = null) {
+    logger.info('Generating fallback response', { activeSkill });
     return {
-      response,
+      response: `⚠️ Couldn't get an answer this time. ${this.describeFailure(error)}`,
       metadata: {
         skill: activeSkill,
         processingTime: 0,
         requestId: this.requestCount,
         usedFallback: true,
-        isTranscriptionResponse: true
+        error: error ? String(error.message || error) : null
       }
     };
+  }
+
+  generateIntelligentFallbackResponse(text, activeSkill, error = null) {
+    const result = this.generateFallbackResponse(text, activeSkill, error);
+    result.metadata.isTranscriptionResponse = true;
+    return result;
   }
 
   async testConnection() {
